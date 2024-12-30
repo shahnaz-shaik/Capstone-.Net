@@ -1,0 +1,311 @@
+namespace DoctorMS.Models
+{
+    public class Doctor:IEquatable<Doctor>
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public string Specialty { get; set; }= string.Empty;
+        public bool IsAvailable { get; set; }
+        public bool Equals(Doctor? other)
+        {
+            if (other == null) return false;
+            return Id == other.Id;
+        }
+    }
+}
+using DoctorMS.Models;
+
+namespace DoctorMS.Interfaces
+{
+    public interface IDoctorService
+    {
+        IEnumerable<Doctor> GetAvailableDoctors();
+        Doctor UpdateDoctorAvailability(int id, bool availability);
+    }
+}
+using DoctorMS.Models;
+
+namespace DoctorMS.Interfaces
+{
+    public interface IDoctorRepository
+    {
+        IEnumerable<Doctor> GetAvailableDoctors();
+        Doctor UpdateAvailability(int id, bool availability);
+    }
+}
+using DoctorMS.Contexts;
+using DoctorMS.Exceptions;
+using DoctorMS.Interfaces;
+using DoctorMS.Models;
+
+namespace DoctorMS.Repositories
+{
+    public class DoctorRepository : IDoctorRepository
+    {
+        private readonly DoctorContext _context;
+
+        public DoctorRepository(DoctorContext context)
+        {
+            _context = context;
+        }
+
+        public IEnumerable<Doctor> GetAvailableDoctors()
+        {
+            return _context.Doctors.Where(d => d.IsAvailable).ToList();
+        }
+
+        public Doctor UpdateAvailability(int id, bool availability)
+        {
+            var doctor = _context.Doctors.Find(id);
+            if (doctor == null)
+            {
+                throw new DoctorNotFoundException(id);
+            }
+
+            doctor.IsAvailable = availability;
+            _context.SaveChanges();
+            return doctor;
+        }
+ public Doctor UpdateDoctor(Doctor doctor)
+ {
+     _context.Doctors.Update(doctor);
+     _context.SaveChanges();
+     return doctor;
+ }
+    }
+}
+using DoctorMS.Interfaces;
+using DoctorMS.Models;
+using DoctorMS.Models.DTOs;
+
+namespace DoctorMS.Services
+{
+    public class DoctorService:IDoctorService
+    {
+        private readonly IDoctorRepository _repository;
+
+        public DoctorService(IDoctorRepository repository)
+        {
+            _repository = repository;
+        }
+
+        public IEnumerable<Doctor> GetAvailableDoctors()
+        {
+            return _repository.GetAvailableDoctors();
+        }
+
+        public Doctor UpdateDoctorAvailability(int id, bool availability)
+        {
+            return _repository.UpdateAvailability(id, availability);
+        }
+
+        public Doctor GetDoctorById(int id)
+        {
+            return _repository.GetDoctorById(id);
+        }
+        public Doctor AddAppointment(int doctorId, int appointmentId, DateTime appointmentDate)
+        {
+            var doctor = _repository.GetDoctorById(doctorId);
+            if (doctor != null)
+            {
+                doctor.Appointments.Add(new AppointmentDetailsDTO
+                {
+                    AppointmentId = appointmentId,
+                    AppointmentDate = appointmentDate
+                });
+                _repository.UpdateAvailability(doctorId, false); // Mark doctor as unavailable after the appointment is scheduled
+            }
+            return doctor;
+        }
+
+        // Method to remove an appointment from the doctor's schedule
+        public Doctor RemoveAppointment(int doctorId, int appointmentId)
+        {
+            var doctor = _repository.GetDoctorById(doctorId);
+            if (doctor != null)
+            {
+                var appointment = doctor.Appointments.FirstOrDefault(a => a.AppointmentId == appointmentId);
+                if (appointment != null)
+                {
+                    doctor.Appointments.Remove(appointment);
+                    if (!doctor.Appointments.Any()) // If no more appointments, set doctor as available
+                    {
+                        _repository.UpdateAvailability(doctorId, true);
+                    }
+                }
+            }
+            return doctor;
+        }
+    }
+}
+
+
+
+
+using DoctorMS.Models;
+using Microsoft.EntityFrameworkCore;
+
+namespace DoctorMS.Contexts
+{
+    public class DoctorContext:DbContext
+    {
+        public DoctorContext(DbContextOptions<DoctorContext> options) : base(options) { }
+
+        public DbSet<Doctor> Doctors { get; set; }
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Doctor>().HasData(
+                new Doctor { Id = 1, Name = "Dr. John Smith", Specialty = "Cardiology", IsAvailable = true },
+                new Doctor { Id = 2, Name = "Dr. Emily Davis", Specialty = "Pediatrics", IsAvailable = false },
+                new Doctor { Id = 3, Name = "Dr. Robert Brown", Specialty = "Neurology", IsAvailable = true }
+            );
+        }
+    }
+}
+using DoctorMS.Exceptions;
+using DoctorMS.Interfaces;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
+
+namespace DoctorMS.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class DoctorsController : ControllerBase
+    {
+        private readonly IDoctorService _service;
+        private readonly ILogger<DoctorsController> _logger;
+
+        public DoctorsController(IDoctorService service, ILogger<DoctorsController> logger)
+        {
+            _service = service;
+            _logger = logger;
+        }
+
+        // Existing method for getting available doctors
+        [HttpGet]
+        public IActionResult GetAvailableDoctors()
+        {
+            try
+            {
+                _logger.LogInformation("Fetching available doctors...");
+                var doctors = _service.GetAvailableDoctors(); // Assuming this method fetches available doctors
+                return Ok(doctors);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error occurred while fetching available doctors: {ex.Message}");
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // Existing method to update doctor availability
+        [HttpPut("{id}/availability")]
+        public IActionResult UpdateAvailability(int id, [FromBody] bool availability)
+        {
+            try
+            {
+                _logger.LogInformation($"Updating availability for doctor with ID {id} to {availability}");
+                var updatedDoctor = _service.UpdateDoctorAvailability(id, availability);
+                return Ok(updatedDoctor);
+            }
+            catch (DoctorNotFoundException ex)
+            {
+                _logger.LogWarning($"Doctor not found: {ex.Message}");
+                return NotFound(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error occurred while updating availability for doctor {id}: {ex.Message}");
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // Optionally, if you want to keep the GetById method for future use
+        [HttpGet("{id}")]
+        public IActionResult GetDoctorById(int id)
+        {
+            try
+            {
+                _logger.LogInformation($"Fetching doctor with ID {id}...");
+                var doctor = _service.GetDoctorById(id); 
+                if (doctor == null)
+                {
+                    return NotFound(new { message = "Doctor not found." });
+                }
+                return Ok(doctor);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error occurred while fetching doctor with ID {id}: {ex.Message}");
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+    }
+}
+namespace DoctorMS.Exceptions
+{
+    public class DoctorNotFoundException:Exception
+    {
+        public DoctorNotFoundException(int id)
+            : base($"Doctor with ID {id} not found.") { }
+    }
+}
+
+using DoctorMS.Contexts;
+using DoctorMS.Interfaces;
+using DoctorMS.Repositories;
+using DoctorMS.Services;
+using Microsoft.EntityFrameworkCore;
+
+namespace DoctorMS
+{
+    public class Program
+    {
+        public static void Main(string[] args)
+        {
+            var builder = WebApplication.CreateBuilder(args);
+
+            // Add services to the container.
+
+            builder.Services.AddControllers();
+            // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+            builder.Services.AddEndpointsApiExplorer();
+            builder.Services.AddSwaggerGen();
+
+            builder.Services.AddDbContext<DoctorContext>(options =>
+              options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+            builder.Services.AddScoped<IDoctorRepository, DoctorRepository>();
+            builder.Services.AddScoped<IDoctorService, DoctorService>();
+            var app = builder.Build();
+
+            // Configure the HTTP request pipeline.
+            if (app.Environment.IsDevelopment())
+            {
+                app.UseSwagger();
+                app.UseSwaggerUI();
+            }
+
+            app.UseAuthorization();
+
+
+            app.MapControllers();
+
+            app.Run();
+        }
+    }
+}
+{
+    "Logging": {
+        "LogLevel": {
+            "Default": "Information",
+            "Microsoft.AspNetCore": "Warning"
+        }
+    },
+    "ConnectionStrings": {
+        "DefaultConnection": "Server=DESKTOP-2QN715N\\SQLEXPRESS;TrustServerCertificate=True;Integrated Security=True;Database=dbDoctor;"
+    },
+    "AllowedHosts": "*"
+}

@@ -1,0 +1,230 @@
+namespace PatientRecordMS.Models
+{
+    public class PatientRecord
+    {
+        public int Id { get; set; }
+        public int PatientId { get; set; }
+        public string Diagnosis { get; set; } = string.Empty;
+        public string Treatment { get; set; } = string.Empty;
+        public string DoctorAssigned { get; set; } = string.Empty;
+        public DateTime AppointmentDate { get; set; }
+        public string ReasonForAppointment { get; set; } = string.Empty;
+        public string AppointmentStatus { get; set; } = "Pending"; 
+    }
+}
+namespace PatientRecordMS.Interfaces
+{
+    public interface IRepository<TEntity> where TEntity : class
+    {
+        Task<TEntity> Add(TEntity entity);
+        Task<IEnumerable<TEntity>> GetAllByPatientId(int patientId);
+    }
+}
+using PatientRecordMS.Models;
+
+namespace PatientRecordMS.Interfaces
+{
+    public interface IPatientRecordService
+    {
+        Task<IEnumerable<PatientRecord>> GetRecordsByPatientId(int patientId);
+        Task<PatientRecord> AddRecord(PatientRecord record);
+    }
+}
+using Microsoft.EntityFrameworkCore;
+using PatientRecordMS.Contexts;
+using PatientRecordMS.Interfaces;
+using PatientRecordMS.Models;
+
+namespace PatientRecordMS.Repositories
+{
+    public class PatientRecordRepository:IRepository<PatientRecord>
+    {
+        private readonly PatientRecordContext _context;
+
+        public PatientRecordRepository(PatientRecordContext context)
+        {
+            _context = context;
+        }
+
+        // Add a new record
+        public async Task<PatientRecord> Add(PatientRecord entity)
+        {
+            _context.Records.Add(entity);
+            await _context.SaveChangesAsync();
+            return entity;
+        }
+
+        // Get all records by patient ID
+        public async Task<IEnumerable<PatientRecord>> GetAllByPatientId(int patientId)
+        {
+            return await _context.Records
+                .Where(record => record.PatientId == patientId)
+                .ToListAsync();
+        }
+    }
+}
+using PatientRecordMS.Interfaces;
+using PatientRecordMS.Models;
+
+namespace PatientRecordMS.Services
+{
+    public class PatientRecordService:IPatientRecordService
+    {
+        private readonly IRepository<PatientRecord> _repository;
+
+        public PatientRecordService(IRepository<PatientRecord> repository)
+        {
+            _repository = repository;
+        }
+
+        // Get records for a specific patient
+        public async Task<IEnumerable<PatientRecord>> GetRecordsByPatientId(int patientId)
+        {
+            return await _repository.GetAllByPatientId(patientId);
+        }
+
+        // Add a new medical record
+        public async Task<PatientRecord> AddRecord(PatientRecord patientRecord)
+        {
+            var record = new PatientRecord
+            {
+                PatientId = patientRecord.PatientId,
+                Diagnosis = patientRecord.Diagnosis,
+                Treatment = patientRecord.Treatment,
+                AppointmentDate = patientRecord.AppointmentDate,
+                DoctorAssigned = patientRecord.DoctorAssigned,
+                ReasonForAppointment = patientRecord.ReasonForAppointment,
+                AppointmentStatus = patientRecord.AppointmentStatus
+            };
+
+            return await _repository.Add(record);
+        }
+    }
+}
+
+using Microsoft.EntityFrameworkCore;
+using PatientRecordMS.Models;
+
+namespace PatientRecordMS.Contexts
+{
+    public class PatientRecordContext:DbContext
+    {
+        public PatientRecordContext(DbContextOptions<PatientRecordContext> options) : base(options) { }
+
+        public DbSet<PatientRecord> Records { get; set; }
+
+    }
+}
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using PatientRecordMS.Interfaces;
+using PatientRecordMS.Models;
+
+namespace PatientRecordMS.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class PatientRecordController : ControllerBase
+    {
+        private readonly IPatientRecordService _service;
+
+        public PatientRecordController(IPatientRecordService service)
+        {
+            _service = service;
+        }
+
+        // Get records for a specific patient
+        [HttpGet("{patientId}")]
+        public async Task<IActionResult> GetPatientRecords(int patientId)
+        {
+            try
+            {
+                var records = await _service.GetRecordsByPatientId(patientId);
+                if (records == null || !records.Any())
+                {
+                    return NotFound(new { message = "No records found for the patient." });
+                }
+                return Ok(records);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // Add a new medical record
+        [HttpPost]
+        public async Task<IActionResult> AddRecord([FromBody] PatientRecord patientRecord)
+        {
+            try
+            {
+                var record = await _service.AddRecord(patientRecord);
+                return CreatedAtAction(nameof(GetPatientRecords), new { patientId = record.PatientId }, record);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+    }
+
+}
+
+
+using Microsoft.EntityFrameworkCore;
+using PatientRecordMS.Contexts;
+using PatientRecordMS.Interfaces;
+using PatientRecordMS.Models;
+using PatientRecordMS.Repositories;
+using PatientRecordMS.Services;
+
+namespace PatientRecordMS
+{
+    public class Program
+    {
+        public static void Main(string[] args)
+        {
+            var builder = WebApplication.CreateBuilder(args);
+
+            // Add services to the container.
+
+            builder.Services.AddControllers();
+            // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+            builder.Services.AddEndpointsApiExplorer();
+            builder.Services.AddSwaggerGen();
+            builder.Services.AddDbContext<PatientRecordContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+            builder.Services.AddScoped<IRepository<PatientRecord>, PatientRecordRepository>();
+            builder.Services.AddScoped<IPatientRecordService, PatientRecordService>();
+
+            var app = builder.Build();
+
+            // Configure the HTTP request pipeline.
+            if (app.Environment.IsDevelopment())
+            {
+                app.UseSwagger();
+                app.UseSwaggerUI();
+            }
+
+            app.UseAuthorization();
+
+
+            app.MapControllers();
+
+            app.Run();
+        }
+    }
+}
+{
+    "Logging": {
+        "LogLevel": {
+            "Default": "Information",
+            "Microsoft.AspNetCore": "Warning"
+        }
+    },
+    "ConnectionStrings": {
+        "DefaultConnection": "Server=DESKTOP-2QN715N\\SQLEXPRESS;TrustServerCertificate=True;Integrated Security=True;Database=dbPatientRecord;"
+    },
+    "AllowedHosts": "*"
+}

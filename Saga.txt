@@ -1,0 +1,186 @@
+namespace SagaOrchestratorMS.Models
+{
+    public class DoctorResponse
+    {
+        public int Id { get; set; }
+        public bool IsAvailable { get; set; }
+    }
+}
+
+namespace SagaOrchestratorMS.Models
+{
+    public class AppointmentRequest
+    {
+        public int UserId { get; set; }
+        public int DoctorId { get; set; }
+        public DateTime AppointmentDate { get; set; }
+    }
+}
+namespace SagaOrchestratorMS.Models
+{
+    public class BaseUrls
+    {
+        public string UserManagementMS { get; set; } = string.Empty;
+        public string AppointmentMS { get; set; } = string.Empty;
+        public string DoctorMS { get; set; } = string.Empty;
+    }
+}
+
+using Microsoft.Extensions.Options;
+using Newtonsoft.Json;
+using SagaOrchestratorMS.Models;
+using System.Text;
+
+namespace SagaOrchestratorMS.Services
+{
+    public class SagaOrchestratorService
+    {
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly BaseUrls _baseUrls;
+
+        public SagaOrchestratorService(IHttpClientFactory httpClientFactory, IOptions<BaseUrls> options)
+        {
+            _httpClientFactory = httpClientFactory;
+            _baseUrls = options.Value;
+        }
+
+        public async Task<bool> ScheduleAppointmentAsync(AppointmentRequest request)
+        {
+            var client = _httpClientFactory.CreateClient();
+
+            // Step 1: Check if user exists (UserManagementMS)
+            var userResponse = await client.GetAsync($"{_baseUrls.UserManagementMS}/{request.UserId}");
+            if (!userResponse.IsSuccessStatusCode)
+            {
+                // Log error: User not found
+                return false;
+            }
+
+            // Step 2: Check doctor availability (DoctorMS)
+            var doctorResponse = await client.GetAsync($"{_baseUrls.DoctorMS}/{request.DoctorId}/availability");
+            if (!doctorResponse.IsSuccessStatusCode)
+            {
+                // Log error: Doctor not available
+                return false;
+            }
+
+            var doctor = JsonConvert.DeserializeObject<DoctorResponse>(await doctorResponse.Content.ReadAsStringAsync());
+
+            // Step 3: Create appointment (AppointmentMS)
+            var appointmentData = new
+            {
+                UserId = request.UserId,
+                DoctorId = request.DoctorId,
+                AppointmentDate = request.AppointmentDate
+            };
+
+            var content = new StringContent(JsonConvert.SerializeObject(appointmentData), Encoding.UTF8, "application/json");
+
+            var appointmentResponse = await client.PostAsync(_baseUrls.AppointmentMS, content);
+            if (!appointmentResponse.IsSuccessStatusCode)
+            {
+                // Log error: Appointment creation failed
+                return false;
+            }
+
+            // Step 4: Update doctor availability (DoctorMS)
+            var updateDoctorResponse = await client.PutAsync(
+                $"{_baseUrls.DoctorMS}/{request.DoctorId}/availability",
+                new StringContent("false", Encoding.UTF8, "application/json")
+            );
+            if (!updateDoctorResponse.IsSuccessStatusCode)
+            {
+                // Log error: Failed to update doctor availability
+                return false;
+            }
+
+            return true; // Saga completed successfully
+        }
+    }
+}
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using SagaOrchestratorMS.Models;
+using SagaOrchestratorMS.Services;
+
+namespace SagaOrchestratorMS.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class SagaController : ControllerBase
+    {
+        private readonly SagaOrchestratorService _orchestratorService;
+
+        public SagaController(SagaOrchestratorService orchestratorService)
+        {
+            _orchestratorService = orchestratorService;
+        }
+
+        [HttpPost("schedule")]
+        public async Task<IActionResult> ScheduleAppointment([FromBody] AppointmentRequest request)
+        {
+            var result = await _orchestratorService.ScheduleAppointmentAsync(request);
+            if (result)
+            {
+                return Ok(new { message = "Appointment scheduled successfully." });
+            }
+            return BadRequest(new { message = "Failed to schedule appointment." });
+        }
+    }
+}
+
+
+using SagaOrchestratorMS.Models;
+using SagaOrchestratorMS.Services;
+
+namespace SagaOrchestratorMS
+{
+    public class Program
+    {
+        public static void Main(string[] args)
+        {
+            var builder = WebApplication.CreateBuilder(args);
+
+            // Add services to the container.
+
+            builder.Services.AddControllers();
+            // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+            builder.Services.AddEndpointsApiExplorer();
+            builder.Services.AddSwaggerGen();
+            builder.Services.AddHttpClient();
+            builder.Services.AddScoped<SagaOrchestratorService>();
+            builder.Services.Configure<BaseUrls>(builder.Configuration.GetSection("BaseUrls"));
+
+
+            var app = builder.Build();
+
+            // Configure the HTTP request pipeline.
+            if (app.Environment.IsDevelopment())
+            {
+                app.UseSwagger();
+                app.UseSwaggerUI();
+            }
+
+            app.UseAuthorization();
+
+
+            app.MapControllers();
+
+            app.Run();
+        }
+    }
+}
+{
+    "Logging": {
+        "LogLevel": {
+            "Default": "Information",
+            "Microsoft.AspNetCore": "Warning"
+        }
+    },
+    "BaseUrls": {
+        "UserManagementMS": "http://localhost:5033/api/User",
+        "AppointmentMS": "http://localhost:5099/api/Appointments",
+        "DoctorMS": "http://localhost:5112/api/Doctors"
+    },
+    "AllowedHosts": "*"
+}

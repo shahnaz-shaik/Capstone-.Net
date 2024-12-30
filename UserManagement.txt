@@ -1,0 +1,516 @@
+using System.ComponentModel.DataAnnotations;
+
+namespace AuthenticationAPI.Models
+{
+    public class User
+    {
+      
+        public int Id { get; set; }
+       
+        public string Username { get; set; } = string.Empty;
+        public byte[] Password { get; set; }
+        public byte[] Key { get; set; }
+        public string Role { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+    }
+}
+
+
+namespace AuthenticationAPI.Models.DTOs
+{
+    public class UserResponseDTO
+    {
+        public string Username { get; set; } = string.Empty;
+        public string Role { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public string Token { get; set; } = string.Empty;
+    }
+}
+
+using System.ComponentModel.DataAnnotations;
+
+namespace AuthenticationAPI.Models.DTOs
+{
+    public class UserRegisterRequestDTO
+    {
+        [Required(ErrorMessage = "Username cannot be empty")]
+        public string Username { get; set; } = string.Empty;
+        [Required(ErrorMessage = "Password is manditory")]
+        [MinLength(8, ErrorMessage = "Password must be at least 8 characters long")]
+        public string Password { get; set; } = string.Empty;
+        [Required]
+        public string Role { get; set; } = string.Empty;
+    }
+}
+
+namespace AuthenticationAPI.Models.DTOs
+{
+    public class UserDetailsDTO
+    {
+        public string Username { get; set; } = string.Empty;
+        public string Role { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+    }
+}
+
+using System.ComponentModel.DataAnnotations;
+
+namespace AuthenticationAPI.Models.DTOs
+{
+    public class LoginRequestDTO
+    {
+        [Required(ErrorMessage = "Username cannot be empty")]
+        public string Username { get; set; } = string.Empty;
+        [Required(ErrorMessage = "Password is manditory")]
+        public string Password { get; set; } = string.Empty;
+    }
+}
+
+using AuthenticationAPI.Models;
+using AuthenticationAPI.Models.DTOs;
+
+namespace AuthenticationAPI.Interfaces
+{
+    public interface IUserService
+    {
+        public Task<UserResponseDTO> Login(LoginRequestDTO loginRequest);
+        public Task<UserResponseDTO> Register(UserRegisterRequestDTO userRequest);
+        public Task<UserDetailsDTO> GetUserById(int id);
+    }
+}
+
+
+using AuthenticationAPI.Models.DTOs;
+
+namespace AuthenticationAPI.Interfaces
+{
+    public interface ITokenService
+    {
+        public Task<string> GenerateToken(UserResponseDTO user);
+    }
+}
+
+
+namespace AuthenticationAPI.Interfaces
+{
+    public interface IRepository<K, T> where T : class
+    {
+        Task<T> Get(K key);
+        Task<T> GetById(int id);
+        Task<ICollection<T>> GetAll();
+        Task<T> Add(T entity);
+        Task<T> Update(T entity);
+        Task<T> Delete(K key);
+    }
+}
+
+using AuthenticationAPI.Contexts;
+using AuthenticationAPI.Interfaces;
+using AuthenticationAPI.Models;
+using Microsoft.EntityFrameworkCore;
+
+namespace AuthenticationAPI.Repositories
+{
+    public class UserRepository : IRepository<string, User>
+    {
+        private readonly AuthenticationContext _context;
+
+        public UserRepository(AuthenticationContext context)
+        {
+            _context = context;
+        }
+        public async Task<User> Add(User entity)
+        {
+            _context.Users.Add(entity);
+            await _context.SaveChangesAsync();
+            return entity;
+        }
+
+        public async Task<User> Delete(string key)
+        {
+            var user = await Get(key);
+            if (user == null)
+            {
+                throw new Exception("User not found");
+            }
+            _context.Users.Remove(user);
+            await _context.SaveChangesAsync();
+            return user;
+        }
+        public async Task<User> Get(string key) 
+        {
+            return await _context.Users.SingleOrDefaultAsync(u => u.Username == key);
+        }
+        public async Task<User> GetById(int key)
+        {
+            var user = await _context.Users.SingleOrDefaultAsync(u => u.Id == key);
+            if (user == null)
+            {
+                throw new Exception("User not found");
+            }
+            return user;
+        }
+
+        public async Task<ICollection<User>> GetAll()
+        {
+            var users = _context.Users;
+            if (users.Count() == 0)
+                throw new Exception("No users found");
+            return await users.ToListAsync();
+        }
+
+        public async Task<User> Update(User entity)
+        {
+            var user = await Get(entity.Username);
+            if (user == null)
+            {
+                throw new Exception("User not found");
+            }
+            _context.Users.Update(entity);
+            await _context.SaveChangesAsync();
+            return entity;
+        }
+    }
+}
+
+using AuthenticationAPI.Interfaces;
+using AuthenticationAPI.Models.DTOs;
+using AuthenticationAPI.Models;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace AuthenticationAPI.Services
+{
+    public class UserService : IUserService
+    {
+        private readonly IRepository<string, User> _repository;
+        private readonly ILogger<UserService> _logger;
+        private readonly ITokenService _tokenService;
+
+        public UserService(IRepository<string, User> repository,
+                            ILogger<UserService> logger,
+                            ITokenService tokenService)
+        {
+            _repository = repository;
+            _logger = logger;
+            _tokenService = tokenService;
+        }
+        public async Task<UserResponseDTO> Login(LoginRequestDTO loginRequest)
+        {
+            var user = await _repository.Get(loginRequest.Username);
+            if (user == null)
+            {
+                _logger.LogCritical("User login attempt failed, Invalid username");
+                throw new Exception("User not found");
+            }
+            HMACSHA256 hmac = new HMACSHA256(user.Key);
+            var password = hmac.ComputeHash(Encoding.UTF8.GetBytes(loginRequest.Password));
+            for (int i = 0; i < password.Length; i++)
+            {
+                if (password[i] != user.Password[i])
+                {
+                    _logger.LogWarning("User login attempt failed, Invalid password");
+                    throw new Exception("Invalid password");
+                }
+            }
+            var userResponse = new UserResponseDTO
+            {
+                Username = user.Username,
+                Role = user.Role,
+                Status = user.Status,
+            };
+            userResponse.Token = await _tokenService.GenerateToken(userResponse);
+            return userResponse;
+        }
+
+        public async Task<UserResponseDTO> Register(UserRegisterRequestDTO userRequest)
+        {
+            HMACSHA256 hmac = new HMACSHA256();
+            User user = new User();
+            user.Username = userRequest.Username;
+            user.Password = hmac.ComputeHash(Encoding.UTF8.GetBytes(userRequest.Password));
+            user.Role = userRequest.Role;
+            user.Status = "Active";
+            user.Key = hmac.Key;
+            var result = await _repository.Add(user);
+            if (result == null)
+            {
+                _logger.LogWarning("User creation failed");
+                throw new Exception("User not added");
+            }
+            var userResponse = new UserResponseDTO
+            {
+                Username = user.Username,
+                Role = user.Role,
+                Status = user.Status,
+            };
+            userResponse.Token = await _tokenService.GenerateToken(userResponse);
+            return userResponse;
+        }
+
+        public async Task<UserDetailsDTO> GetUserById(int id)
+        {
+            // Call the repository's GetById method, not Get
+            var user = await _repository.GetById(id);
+            if (user == null)
+            {
+                _logger.LogWarning("User not found with ID: {Id}", id);
+                throw new Exception("User not found");
+            }
+
+            return new UserDetailsDTO
+            {
+                Username = user.Username,
+                Role = user.Role,
+                Status = user.Status
+            };
+        }
+    }
+}
+
+using AuthenticationAPI.Interfaces;
+using AuthenticationAPI.Models.DTOs;
+using Microsoft.IdentityModel.Tokens;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+
+namespace AuthenticationAPI.Services
+{
+    public class TokenService:ITokenService
+    {
+        private readonly byte[] _key;
+
+        public TokenService(IConfiguration configuration)
+        {
+            _key = Encoding.UTF8.GetBytes(configuration["Keys:TokenKey"] ?? "");
+        }
+        public async Task<string> GenerateToken(UserResponseDTO user)
+        {
+            List<Claim> claims = new List<Claim>()
+            {
+                new Claim(ClaimTypes.Name, user.Username),
+                new Claim(ClaimTypes.Role, user.Role)
+            };
+            var symmetricSecurityKey = new SymmetricSecurityKey(_key);
+            var signingCredentials = new SigningCredentials(symmetricSecurityKey, SecurityAlgorithms.HmacSha256);
+            var tokenDescriptor = new SecurityTokenDescriptor
+            {
+                Subject = new ClaimsIdentity(claims),
+                Expires = DateTime.UtcNow.AddDays(1),
+                SigningCredentials = signingCredentials
+            };
+            var tokenHandler = new JwtSecurityTokenHandler();
+            var token = tokenHandler.CreateToken(tokenDescriptor);
+            return  tokenHandler.WriteToken(token);
+
+        }
+    }
+}
+
+using Microsoft.EntityFrameworkCore;
+
+namespace AuthenticationAPI.Contexts
+{
+    public class AuthenticationContext:DbContext
+    {
+        public AuthenticationContext(DbContextOptions<AuthenticationContext> options) : base(options)
+        {
+        }
+        public DbSet<Models.User> Users { get; set; }
+    }
+}
+
+using AuthenticationAPI.Interfaces;
+using AuthenticationAPI.Models.DTOs;
+using AuthenticationAPI.Services;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+
+namespace AuthenticationAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class UserController : ControllerBase
+    {
+        private readonly IUserService _userService;
+
+        public UserController(IUserService userService)
+        {
+            _userService = userService;
+        }
+        [HttpPost("login")]
+        public async Task<ActionResult<UserResponseDTO>> Login(LoginRequestDTO loginRequest)
+        {
+            var user = await _userService.Login(loginRequest);
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+            return Ok(user);
+        }
+        [HttpPost("register")]
+        public async Task<ActionResult<UserResponseDTO>> Register(UserRegisterRequestDTO registerRequest)
+        {
+            var user = await _userService.Register(registerRequest);
+            if (user == null)
+            {
+                return Unauthorized();
+            }
+            return Ok(user);
+        }
+        [HttpGet("{id}")]
+        public async Task<IActionResult> GetUserById(int id)
+        {
+            
+                var user = await _userService.GetUserById(id);
+                if (user == null)
+                {
+                    return Unauthorized();
+                }
+                return Ok(user);
+            }
+           
+        }
+ }
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+
+namespace AuthenticationAPI.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class ConfigController : ControllerBase
+    {
+        [HttpGet]
+        [Authorize]
+        public ActionResult GetConfig()
+        {
+            return Ok("Test Success");
+        }
+    }
+}
+
+{
+    "Logging": {
+        "LogLevel": {
+            "Default": "Information",
+            "Microsoft.AspNetCore": "Warning"
+        }
+    },
+    "ConnectionStrings": {
+        "DefaultConnection": "Server=DESKTOP-2QN715N\\SQLEXPRESS;TrustServerCertificate=True;Integrated Security=True;Database=dbAuth;"
+    },
+    "Keys": {
+        "TokenKey": "This is the key used to sign the token. Lets use this for token"
+    },
+    "AllowedHosts": "*"
+}
+
+
+using System.Text;
+using AuthenticationAPI.Contexts;
+using AuthenticationAPI.Interfaces;
+using AuthenticationAPI.Models;
+using AuthenticationAPI.Repositories;
+using AuthenticationAPI.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
+
+namespace AuthenticationAPI
+{
+    public class Program
+    {
+        public static void Main(string[] args)
+        {
+            var builder = WebApplication.CreateBuilder(args);
+
+            // Add services to the container.
+
+            builder.Services.AddControllers();
+            // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+            builder.Services.AddEndpointsApiExplorer();
+          
+            builder.Services.AddSwaggerGen(options =>
+            {
+                options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme()
+                {
+                    Name = "Authorization",
+                    Type = SecuritySchemeType.ApiKey,
+                    Scheme = "Bearer",
+                    BearerFormat = "JWT",
+                    In = ParameterLocation.Header,
+                    Description = "JWT Authorization header using the Bearer scheme. Example:Breare <token>"
+                });
+                options.AddSecurityRequirement(new OpenApiSecurityRequirement
+                {
+                    {
+                        new OpenApiSecurityScheme
+                        {
+                            Reference = new OpenApiReference
+                            {
+                                Type = ReferenceType.SecurityScheme,
+                                Id = "Bearer"
+                            }
+                        },
+                        new string[] {}
+                    }
+                });
+            });
+
+            #region AuthenticationFilter
+            builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+                .AddJwtBearer(options =>
+                {
+                    options.TokenValidationParameters = new TokenValidationParameters
+                    {
+                        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["Keys:TokenKey"] ?? "")),
+                        ValidateIssuerSigningKey = true,
+                        ValidateLifetime = true,
+                        ValidateAudience = false,
+                        ValidateIssuer = false
+                    };
+                });
+            #endregion
+
+
+            #region Contexts
+            builder.Services.AddDbContext<AuthenticationContext>((options) =>
+            {
+                options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
+            });
+            #endregion
+
+            #region Repositories
+            builder.Services.AddScoped<IRepository<string, User>, UserRepository>();
+            #endregion
+
+            #region Services
+            builder.Services.AddScoped<IUserService, UserService>();
+            builder.Services.AddScoped<ITokenService, TokenService>();
+            #endregion
+
+
+            var app = builder.Build();
+
+            // Configure the HTTP request pipeline.
+            if (app.Environment.IsDevelopment())
+            {
+                app.UseSwagger();
+                app.UseSwaggerUI();
+            }
+            app.UseAuthentication();
+
+            app.UseAuthorization();
+
+
+            app.MapControllers();
+
+            app.Run();
+        }
+    }
+}
+

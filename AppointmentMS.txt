@@ -1,0 +1,539 @@
+namespace AppointmentMS.Models
+{
+    public class Appointment:IEquatable<Appointment>
+    {
+        public int Id { get; set; }
+        public string PatientName { get; set; }=string.Empty;
+        public DateTime AppointmentDate { get; set; }
+        public string Reason { get; set; }= string.Empty;
+        public int DoctorId { get; set; }
+
+
+        public bool Equals(Appointment? other)
+        {
+            if (other == null) return false;
+            return Id == other.Id;
+        }
+       
+    }
+}
+
+namespace AppointmentMS.Models.DTOs
+{
+    public class AppointmentUpdateDto
+    {
+
+        public DateTime AppointmentDate { get; set; }
+      
+    }
+}
+
+namespace AppointmentMS.Models.DTOs
+{
+    public class DoctorDTO
+    {
+       
+        public string Name { get; set; } = string.Empty;
+        public string Specialty { get; set; } = string.Empty;
+        public bool IsAvailable { get; set; }
+
+        public List<AppointmentDTO> Appointments { get; set; } = new List<AppointmentDTO>();
+    }
+
+    // Add AppointmentDTO for better separation of concerns
+    public class AppointmentDTO
+    {
+        public int Id { get; set; }
+        public DateTime AppointmentDate { get; set; }
+        public int DoctorId { get; set; }
+    }
+}
+
+
+using AppointmentMS.Models;
+
+using AppointmentMS.Models;
+
+namespace AppointmentMS.Interfaces
+{
+    public interface IAppointmentService
+    {
+        Task<Appointment> BookAppointment(Appointment appointment);
+
+        Appointment RescheduleAppointment(int id, DateTime newDate);
+        void CancelAppointment(int id);
+        Appointment GetAppointmentById(int id);
+        IEnumerable<Appointment> GetAllAppointments();
+    }
+}
+
+
+using AppointmentMS.Models;
+
+namespace AppointmentMS.Interfaces
+{
+    public interface IAppointmentRepository
+    {
+        Appointment Add(Appointment appointment);
+        Appointment Update(Appointment appointment);
+        void Delete(int id);
+        Appointment GetById(int id);
+        IEnumerable<Appointment> GetAll();
+    }
+}
+
+using System.Numerics;
+using AppointmentMS.Models.DTOs;
+
+namespace AppointmentMS.Interfaces
+{
+    public interface IDoctorService
+    {
+        Task<DoctorDTO> GetDoctorById(int id);
+        Task<DoctorDTO> UpdateDoctorAvailability(int id, bool availability);
+        Task AddAppointment(int doctorId, int appointmentId, DateTime appointmentDate);
+        Task RemoveAppointment(int doctorId, int appointmentId);
+    }
+}
+
+using AppointmentMS.Interfaces;
+using AppointmentMS.Models;
+
+namespace AppointmentMS.Services
+{
+    public class AppointmentService : IAppointmentService
+    {
+        private readonly IAppointmentRepository _repository;
+        private readonly IDoctorService _doctorService;
+
+        public AppointmentService(IAppointmentRepository repository, IDoctorService doctorService)
+        {
+            _repository = repository;
+            _doctorService = doctorService;
+        }
+
+        public async Task<Appointment> BookAppointment(Appointment appointment)
+        {
+            var doctor = await _doctorService.GetDoctorById(appointment.DoctorId);
+            if (doctor == null || !doctor.IsAvailable)
+            {
+                throw new InvalidOperationException("Doctor is not available.");
+            }
+
+            var bookedAppointment = _repository.Add(appointment);
+
+            // Update doctor schedule in DoctorMS
+            await _doctorService.AddAppointment(appointment.DoctorId, bookedAppointment.Id, bookedAppointment.AppointmentDate);
+
+            return bookedAppointment;
+        }
+
+        public Appointment RescheduleAppointment(int id, DateTime newDate)
+        {
+            var appointment = _repository.GetById(id);
+            if (appointment == null)
+            {
+                throw new KeyNotFoundException($"Appointment with ID {id} not found.");
+            }
+
+            // Update appointment date
+            appointment.AppointmentDate = newDate;
+
+            var updatedAppointment = _repository.Update(appointment);
+
+            // Update doctor schedule in DoctorMS
+            _doctorService.RemoveAppointment(appointment.DoctorId, id);
+            _doctorService.AddAppointment(appointment.DoctorId, id, newDate);
+
+            return updatedAppointment;
+        }
+
+        public void CancelAppointment(int id)
+        {
+            var appointment = _repository.GetById(id);
+            if (appointment != null)
+            {
+                // Remove appointment from doctor's schedule in DoctorMS
+                _doctorService.RemoveAppointment(appointment.DoctorId, id);
+                _repository.Delete(id);
+            }
+        }
+
+        public Appointment GetAppointmentById(int id)
+        {
+            return _repository.GetById(id);
+        }
+
+        public IEnumerable<Appointment> GetAllAppointments()
+        {
+            return _repository.GetAll();
+        }
+    }
+}
+
+
+using System.Numerics;
+using System.Text;
+using AppointmentMS.Interfaces;
+using AppointmentMS.Models;
+using AppointmentMS.Models.DTOs;
+using Newtonsoft.Json;
+
+namespace AppointmentMS.Services
+{
+    public class DoctorService : IDoctorService
+    {
+        private readonly HttpClient _httpClient;
+        private readonly ILogger<DoctorService> _logger;
+        private readonly IConfiguration _configuration;
+
+        public DoctorService(HttpClient httpClient, ILogger<DoctorService> logger, IConfiguration configuration)
+        {
+            _httpClient = httpClient;
+            _logger = logger;
+            _configuration = configuration;
+            _httpClient.BaseAddress = new Uri(_configuration["DoctorService:BaseUrl"]);
+        }
+
+        public async Task<DoctorDTO> GetDoctorById(int id)
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync($"api/doctors/{id}");
+                response.EnsureSuccessStatusCode();
+
+                var content = await response.Content.ReadAsStringAsync();
+                return JsonConvert.DeserializeObject<DoctorDTO>(content) ?? throw new Exception("Doctor not found.");
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogError($"Error fetching doctor with ID {id}: {ex.Message}");
+                throw;
+            }
+        }
+
+        public async Task<DoctorDTO> UpdateDoctorAvailability(int id, bool availability)
+        {
+            try
+            {
+                var payload = new StringContent(JsonConvert.SerializeObject(availability), Encoding.UTF8, "application/json");
+                var response = await _httpClient.PutAsync($"api/doctors/{id}/availability", payload);
+                response.EnsureSuccessStatusCode();
+
+                var content = await response.Content.ReadAsStringAsync();
+                return JsonConvert.DeserializeObject<DoctorDTO>(content) ?? throw new Exception("Failed to update doctor availability.");
+            }
+            catch (HttpRequestException ex)
+            {
+                _logger.LogError($"Error updating availability for doctor with ID {id}: {ex.Message}");
+                throw;
+            }
+        }
+        public async Task AddAppointment(int doctorId, int appointmentId, DateTime appointmentDate)
+        {
+            var doctor = await GetDoctorById(doctorId);
+            if (doctor == null)
+            {
+                throw new KeyNotFoundException($"Doctor with ID {doctorId} not found.");
+            }
+
+            // Add the appointment to the doctor's schedule
+            doctor.Appointments.Add(new AppointmentDTO
+            {
+                Id = appointmentId,
+                AppointmentDate = appointmentDate,
+                DoctorId = doctorId
+            });
+
+            Console.WriteLine($"Appointment {appointmentId} added to Doctor {doctorId}'s schedule on {appointmentDate}");
+        }
+
+        public async Task RemoveAppointment(int doctorId, int appointmentId)
+        {
+            var doctor = await GetDoctorById(doctorId);
+            if (doctor == null)
+            {
+                throw new KeyNotFoundException($"Doctor with ID {doctorId} not found.");
+            }
+
+            // Find and remove the appointment from the doctor's schedule
+            var appointmentToRemove = doctor.Appointments.FirstOrDefault(a => a.Id == appointmentId);
+            if (appointmentToRemove != null)
+            {
+                doctor.Appointments.Remove(appointmentToRemove);
+                Console.WriteLine($"Appointment {appointmentId} removed from Doctor {doctorId}'s schedule.");
+            }
+            else
+            {
+                Console.WriteLine($"Appointment {appointmentId} not found in Doctor {doctorId}'s schedule.");
+            }
+        }
+
+    }
+}
+
+
+
+
+namespace AppointmentMS.Exceptions
+{
+   public class AppointmentNotFoundException : Exception
+        {
+            public AppointmentNotFoundException(int id)
+                : base($"Appointment with ID {id} not found.") { }
+        }
+}
+
+using AppointmentMS.Models;
+using Microsoft.EntityFrameworkCore;
+using System.Collections.Generic;
+
+namespace AppointmentMS.Contexts
+{
+    public class AppointmentContext : DbContext
+    {
+        public AppointmentContext(DbContextOptions<AppointmentContext> options) : base(options) { }
+
+        public DbSet<Appointment> Appointments { get; set; }
+    }
+}
+
+using System.Data;
+using AppointmentMS.Interfaces;
+using AppointmentMS.Models;
+using AppointmentMS.Models.DTOs;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+
+namespace AppointmentMS.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class AppointmentsController : ControllerBase
+    {
+        private readonly IAppointmentService _service;
+
+        public AppointmentsController(IAppointmentService service)
+        {
+            _service = service;
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> BookAppointment([FromBody] Appointment appointment)
+        {
+            try
+            {
+                var createdAppointment = await _service.BookAppointment(appointment);
+
+                return CreatedAtAction(nameof(GetAppointmentById), new { id = createdAppointment.Id }, createdAppointment);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+
+        [HttpPut("{id}")]
+        public IActionResult RescheduleAppointment(int id, [FromBody] AppointmentUpdateDto updatedAppointment)
+        {
+            try
+            {
+                var rescheduledAppointment = _service.RescheduleAppointment(id, updatedAppointment.AppointmentDate);
+                return Ok(rescheduledAppointment);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpDelete("{id}")]
+        public IActionResult CancelAppointment(int id)
+        {
+            try
+            {
+                _service.CancelAppointment(id);
+                return Ok($"Appointment with ID {id} successfully deleted.");
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpGet("{id}")]
+        public IActionResult GetAppointmentById(int id)
+        {
+            try
+            {
+                var appointment = _service.GetAppointmentById(id);
+                if (appointment == null)
+                {
+                    return NotFound(new { message = "Appointment not found." });
+                }
+                return Ok(appointment);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpGet]
+        public IActionResult GetAllAppointments()
+        {
+            try
+            {
+                var appointments = _service.GetAllAppointments();
+                return Ok(appointments);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+    }
+}
+using AppointmentMS.Contexts;
+using AppointmentMS.Exceptions;
+using AppointmentMS.Interfaces;
+using AppointmentMS.Models;
+using Microsoft.EntityFrameworkCore.Metadata.Internal;
+
+namespace AppointmentMS.Repositories
+{
+    public class AppointmentRepository : IAppointmentRepository
+    {
+        private readonly AppointmentContext _context;
+
+        public AppointmentRepository(AppointmentContext context)
+        {
+            _context = context;
+        }
+
+        public Appointment Add(Appointment appointment)
+        {
+            _context.Appointments.Add(appointment);
+            _context.SaveChanges();
+            return appointment;
+        }
+
+        public Appointment Update(Appointment appointment)
+        {
+            var existingAppointment = _context.Appointments.Find(appointment.Id);
+            if (existingAppointment == null)
+            {
+                throw new AppointmentNotFoundException(appointment.Id);
+            }
+          
+            existingAppointment.AppointmentDate = appointment.AppointmentDate;
+       
+            _context.SaveChanges();
+            return existingAppointment;
+        }
+
+        public void Delete(int id)
+        {
+            var appointment = _context.Appointments.Find(id);
+            if (appointment == null)
+            {
+                throw new AppointmentNotFoundException(id);
+            }
+
+            _context.Appointments.Remove(appointment);
+            _context.SaveChanges();
+        }
+
+        public Appointment GetById(int id)
+        {
+            var appointment = _context.Appointments.SingleOrDefault(p => p.Id == id);
+            if (appointment == null)
+                throw new AppointmentNotFoundException(id);
+            return appointment;
+        }
+
+        public IEnumerable<Appointment> GetAll()
+        {
+            return _context.Appointments.ToList();
+        }
+    }
+}
+
+using AppointmentMS.Contexts;
+using AppointmentMS.Interfaces;
+using AppointmentMS.Repositories;
+using AppointmentMS.Services;
+using Microsoft.EntityFrameworkCore;
+
+namespace AppointmentMS
+{
+    public class Program
+    {
+        public static void Main(string[] args)
+        {
+            var builder = WebApplication.CreateBuilder(args);
+
+            // Add services to the container.
+
+            builder.Services.AddControllers();
+            // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+            builder.Services.AddEndpointsApiExplorer();
+            builder.Services.AddSwaggerGen();
+
+            #region Contexts
+            builder.Services.AddDbContext<AppointmentContext>(opts =>
+            {
+                opts.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"));
+            });
+            #endregion
+            builder.Services.AddHttpClient<IDoctorService, DoctorService>(client =>
+            {
+                client.BaseAddress = new Uri("http://localhost:5112");
+            });
+
+
+
+            builder.Services.AddScoped<IAppointmentRepository, AppointmentRepository>();
+            builder.Services.AddScoped<IAppointmentService, AppointmentService>();
+            builder.Services.AddScoped<IDoctorService,DoctorService>();
+
+
+            var app = builder.Build();
+
+            // Configure the HTTP request pipeline.
+            if (app.Environment.IsDevelopment())
+            {
+                app.UseSwagger();
+                app.UseSwaggerUI();
+            }
+
+            app.UseAuthorization();
+
+
+            app.MapControllers();
+
+            app.Run();
+        }
+    }
+}
+{
+    "Logging": {
+        "LogLevel": {
+            "Default": "Information",
+            "Microsoft.AspNetCore": "Warning"
+        }
+    },
+    "ConnectionStrings": {
+        "DefaultConnection": "Server=DESKTOP-2QN715N\\SQLEXPRESS;TrustServerCertificate=True;Integrated Security=True;Database=dbAppointment;"
+    },
+    "AllowedHosts": "*"
+}
